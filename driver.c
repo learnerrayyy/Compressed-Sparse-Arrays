@@ -51,7 +51,7 @@ int main(void)
    //Let's do it all again, but with +200 higher indices
    c = csa_init();
    csa_tostring(c, str);
-   assert(strcmp(str, "0 blocks"));
+   assert(strcmp(str, "0 blocks")==0);
    assert(csa_set(c, 202,  25));
    assert(csa_set(c, 203,  30));
    assert(csa_set(c, 263, 100));
@@ -104,7 +104,7 @@ int main(void)
    assert(strcmp(str, "1 block {1|[65]=60}")==0);
    assert(csa_delete(c, 65));
    csa_tostring(c, str);
-   assert(strcmp(str, "0 blocks"));
+   assert(strcmp(str, "0 blocks")==0);
    // Don't need to do full csa_free() - only the
    // csa structure itself should be in use by now ...
    free(c);
