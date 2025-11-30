@@ -7,6 +7,7 @@ int popcount_mask(mask_t msk)
    return __builtin_popcountll(msk);
 }
 
+
 int block_index(csa* c, unsigned int offset)
 {
    if(c==NULL){
@@ -23,6 +24,7 @@ int block_index(csa* c, unsigned int offset)
    return -1;
 }
 
+
 int value_index(mask_t msk, int bit)
 {
    mask_t lower = 0;
@@ -31,6 +33,7 @@ int value_index(mask_t msk, int bit)
    }
    return popcount_mask(lower);
 }
+
 
 block* insert_block(csa* c, unsigned int offset)
 {
@@ -55,6 +58,7 @@ block* insert_block(csa* c, unsigned int offset)
    return &c->b[pos];
 }
 
+
 csa* csa_init(void)
 {
    csa* c = malloc(sizeof(csa));
@@ -65,6 +69,35 @@ csa* csa_init(void)
    c->n = 0;
    return c;
 }
+
+
+//helper: cover existing value at bit in blk 
+bool block_cover_value(block* blk, int bit, int val)
+{
+   if(blk == NULL) return false;
+   if(!(blk->msk & ((mask_t)1<<bit))) return false;
+   int pos = value_index(blk->msk, bit);
+   blk->vals[pos] = val;
+   return true;
+}
+
+// helper: insert new value for bit in blk
+bool block_insert_value(block* blk, int bit, int val)
+{
+   if(blk == NULL) return false;
+   int pos = value_index(blk->msk, bit);
+   int cnt = popcount_mask(blk->msk);
+   int* nv = realloc(blk->vals, sizeof(int)*(cnt+1));
+   if(nv==NULL){
+      return false;
+   }
+   blk->vals = nv;
+   memmove(&blk->vals[pos+1], &blk->vals[pos], sizeof(int)*(cnt - pos));
+   blk->vals[pos] = val;
+   blk->msk |= ((mask_t)1<<bit);
+   return true;
+}
+
 
 bool csa_get(csa* c, int idx, int* val)
 {
@@ -86,6 +119,7 @@ bool csa_get(csa* c, int idx, int* val)
    return true;
 }
 
+
 bool csa_set(csa* c, int idx, int val)
 {
    if(c==NULL || idx<0){
@@ -103,23 +137,52 @@ bool csa_set(csa* c, int idx, int val)
    } else {
       blk = &c->b[bi];
    }
-   int pos = value_index(blk->msk, bit);
-   int cnt = popcount_mask(blk->msk);
-   if(blk->msk & ((mask_t)1<<bit)){
-      blk->vals[pos] = val;
-      return true;
-   }
 
-   int* nv = realloc(blk->vals, sizeof(int)*(cnt+1));
-   if(nv==NULL){
-      return false;
+   if(blk->msk & ((mask_t)1<<bit)){
+      return block_cover_value(blk, bit, val);
    }
-   blk->vals = nv;
-   memmove(&blk->vals[pos+1], &blk->vals[pos], sizeof(int)*(cnt - pos));
-   blk->vals[pos] = val;
-   blk->msk |= ((mask_t)1<<bit);
-   return true;
+   return block_insert_value(blk, bit, val);
 }
+
+
+void bit_tostring(block* blk, char** p, size_t* rem, int* seen)
+{
+    if (blk == NULL || p == NULL || *p == NULL || rem == NULL || *rem == 0 || seen == NULL) return;
+
+    for (int bit = 0; bit < MSKLEN && *rem > 0; bit++) {
+        mask_t m = (mask_t)1 << bit;
+        if (blk->msk & m) {
+            int written;
+            if (*seen) {
+                written = snprintf(*p, *rem, ":");
+                if (written < 0) return;
+                *p += written; *rem -= (size_t)written;
+            }
+            written = snprintf(*p, *rem, "[%u]=%d", (unsigned)(blk->offset + bit),
+                               blk->vals[value_index(blk->msk, bit)]);
+            if (written < 0) return;
+            *p += written; *rem -= (size_t)written;
+            (*seen)++;
+        }
+    }
+}
+
+
+void block_tostring(block* blk, char** p, size_t* rem)
+{
+    if (blk == NULL || p == NULL || *p == NULL || rem == NULL || *rem == 0) return;
+    int written = snprintf(*p, *rem, "{%d|", popcount_mask(blk->msk));
+    if (written < 0) return;
+    *p += written; *rem -= (size_t)written;
+
+    int seen = 0;
+    bit_tostring(blk, p, rem, &seen);
+
+    written = snprintf(*p, *rem, "}");
+    if (written < 0) return;
+    *p += written; *rem -= (size_t)written;
+}
+
 
 void csa_tostring(csa* c, char* s)
 {
@@ -144,35 +207,12 @@ void csa_tostring(csa* c, char* s)
 
     for (int i = 0; i < c->n; i++) {
         block *blk = &c->b[i];
-        int cnt = popcount_mask(blk->msk);
-        written = snprintf(p, rem, "{%d|", cnt);
-        if (written < 0) return;
-        p += written; rem -= (size_t)written;
-
-        int seen = 0;
-        for (int bit = 0; bit < MSKLEN && rem > 0; bit++) {
-            mask_t m = (mask_t)1 << bit;
-            if (blk->msk & m) {
-                if (seen) {
-                    written = snprintf(p, rem, ":");
-                    if (written < 0) return;
-                    p += written; rem -= (size_t)written;
-                }
-                written = snprintf(p, rem, "[%u]=%d", (unsigned)(blk->offset + bit),
-                                   blk->vals[value_index(blk->msk, bit)]);
-                if (written < 0) return;
-                p += written; rem -= (size_t)written;
-                seen++;
-            }
-        }
-
-        written = snprintf(p, rem, "}");
-        if (written < 0) return;
-        p += written; rem -= (size_t)written;
+        block_tostring(blk, &p, &rem);
     }
 
     *p = '\0';
 }
+
 
 void csa_free(csa** l)
 {
@@ -187,6 +227,7 @@ void csa_free(csa** l)
    free(c);
    *l = NULL;
 }
+
 
 void test(void)
 {
