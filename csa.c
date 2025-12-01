@@ -1,6 +1,6 @@
 #include "csa.h"
 #include "mydefs.h"
-#define TBUFSIZE 100000
+
 
 
 int count1(mask_t msk){
@@ -59,17 +59,6 @@ block* insert_block(csa* c, unsigned int offset){
 }
 
 
-csa* csa_init(void){
-   csa* c = malloc(sizeof(csa));
-   if(c==NULL){
-      return NULL;
-   }
-   c->b = NULL;
-   c->n = 0;
-   return c;
-}
-
-
 //helper: cover existing value at bit in blk 
 bool block_cover_value(block* blk, int bit, int val){
    if(blk == NULL) return false;
@@ -97,6 +86,17 @@ bool block_insert_value(block* blk, int bit, int val){
    blk->vals[pos] = val;
    blk->msk |= ((mask_t)1<<bit);
    return true;
+}
+
+
+csa* csa_init(void){
+   csa* c = malloc(sizeof(csa));
+   if(c==NULL){
+      return NULL;
+   }
+   c->b = NULL;
+   c->n = 0;
+   return c;
 }
 
 
@@ -450,3 +450,4 @@ bool csa_delete(csa* c, int indx)
    return true;
 }
 #endif
+
