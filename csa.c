@@ -2,28 +2,34 @@
 #include "mydefs.h"
 
 
-
+/*
+   count how many bits in mask was set to 1
+   return = 0 ( have no bit was set to 1)
+*/
 int count1(mask_t msk){
    return __builtin_popcountll(msk);
 }
 
-
+/*
+  To find the index of the block corresponding to offset
+  return -1 == nothing find
+*/
 int block_index(csa* c, unsigned int offset){
-   if(c==NULL){
+   if(c == NULL){
       return -1;
    }
-   for(int i=0; i<c->n; i++){
-      if(c->b[i].offset==offset){
+   for(int i = 0; i < c->n; i++){
+      if(c->b[i].offset == offset){
          return i;
-      }
-      if(c->b[i].offset>offset){
-         return -1;
       }
    }
    return -1;
 }
 
-
+/*
+   Given the position of a bit
+   calculate its position in the vals[] array.
+*/
 int value_index(mask_t msk, int bit){
    mask_t lower = 0;
    if(bit > 0){
@@ -32,7 +38,18 @@ int value_index(mask_t msk, int bit){
    return count1(lower);
 }
 
-
+/*
+   Insert a new block at the correct position, 
+   the block array is sorted in ascending order by offset.
+   Returns a pointer to the new block.
+   Step:
+      a. Find the position where the new block should be 
+      inserted (in ascending order of offset)
+      b. Expanding array c->b
+      c. Shift the entire subsequent block to the right.
+      d. Fill in the corresponding position
+      e. returns pointer
+*/
 block* insert_block(csa* c, unsigned int offset){
    if(c==NULL){
       return NULL;
@@ -59,7 +76,12 @@ block* insert_block(csa* c, unsigned int offset){
 }
 
 
-//helper: cover existing value at bit in blk 
+/*
+   helper: cover existing value at bit in blk 
+   step:
+      a. Call value_index to find the bit location of vals[]
+      b. Write the new value cover the old value
+*/
 bool block_cover_value(block* blk, int bit, int val){
    if(blk == NULL) return false;
    if(!(blk->msk & ((mask_t)1<<bit))) return false;
@@ -68,23 +90,31 @@ bool block_cover_value(block* blk, int bit, int val){
    return true;
 }
 
-// helper: insert new value for bit in blk
+/*
+   When a bit does not exist in the block, 
+   insert the new value into the correct position of vals[] 
+   and update the mask.
+   step:
+      a. Calculate the position pos that the bit in vals[].
+      b. Expand vals[],Shift one position to the right.
+      c. Write new value, updata to the right.
+*/
 bool block_insert_value(block* blk, int bit, int val){
    if(blk == NULL){
       return false;
    }
    int pos = value_index(blk->msk, bit);
    int cnt = count1(blk->msk);
-   int* nv = realloc(blk->vals, sizeof(int)*(cnt+1));
+   int* nv = realloc(blk->vals, sizeof(int) * (cnt + 1));
 
-   if(nv==NULL){
+   if(nv == NULL){
       return false;
    }
    blk->vals = nv;
-   memmove(&blk->vals[pos+1], &blk->vals[pos], 
-           sizeof(int)*(cnt - pos));
+   memmove(&blk->vals[pos + 1], &blk->vals[pos],
+      sizeof(int) * (cnt - pos));
    blk->vals[pos] = val;
-   blk->msk |= ((mask_t)1<<bit);
+   blk->msk |= ((mask_t)1 << bit);
    return true;
 }
 
@@ -99,7 +129,16 @@ csa* csa_init(void){
    return c;
 }
 
-
+/*
+a.Calculate offset = idx / sixty - four
+b.Calculate bit = idx % sixty - four
+c.Call block_index
+d.If the block cannot be found(return false)
+e.Check if the corresponding bit of the mask is 1.
+f.Call value_index to find the position of vals[]
+g.Write vals[pos] to *val
+h.return true  
+*/
 bool csa_get(csa* c, int idx, int* val){
    if(c==NULL || val==NULL || idx<0){
       return false;
@@ -119,7 +158,13 @@ bool csa_get(csa* c, int idx, int* val){
    return true;
 }
 
-
+/*
+a.Calculate offset, bit and find block
+b.If it does not exist (insert_block)
+c.If it exists and the bit already exists(block_cover_value)
+d.If it does not exist (block_insert_value)
+e.return true
+*/
 bool csa_set(csa* c, int idx, int val){
 
    if(c==NULL || idx<0){
@@ -286,12 +331,11 @@ void test(void)
       assert(tmp == 25);
    }
 
-//Additional silent tests covering driver.c omissions
 
-//invalid args */
-   assert(!csa_set(NULL, 1, 1));//set on NULL should fail
-   assert(!csa_set(c, -1, 5));//negative index rejected 
-   assert(!csa_get(c, 0, NULL));//NULL out param should fail 
+//invalid args 
+   assert(!csa_set(NULL, 1, 1));
+   assert(!csa_set(c, -1, 5));
+   assert(!csa_get(c, 0, NULL));
 
  //insert out-of-order and ensure blocks remain sorted
    block* bmid = insert_block(c, 32);
@@ -314,9 +358,7 @@ void test(void)
                            &tmp) && tmp == 200);
    assert(csa_get(c, (int)(blk0->offset + (MSKLEN / 2)), 
                            &tmp) && tmp == 150);
-
-   //cover helper should fail for non-set bit 
-   //and succeed for set bit 
+ 
    assert(!block_cover_value(blk0, 1, 5));//bit 1 not set 
    assert(block_cover_value(blk0, 0, 111));//overwrite low b
    assert(csa_get(c, 0, &tmp) && tmp == 111);
@@ -361,8 +403,7 @@ void test(void)
 
 #ifdef EXT
 void csa_foreach(void (*func)
-(int* p, int* ac), csa* c, int* ac)
-{
+(int* p, int* ac), csa* c, int* ac){
    if (func == NULL || c == NULL) {
       return;
    }
@@ -382,72 +423,97 @@ void csa_foreach(void (*func)
    }
 }
 
-/* Delete a stored value at index `indx`.
-   Returns true if a value was removed, false otherwise.
-   - Uses helpers: block_index(), value_index(), count1().
-   - Maintains block/vals/mask invariants.
+/*
+   Remove the value corresponding to a bit from the block, 
+   but keep the block.
 */
-bool csa_delete(csa* c, int indx)
-{
-   if (c == NULL || indx < 0) {
+bool remove_value(block* blk, int bit) {
+   if (blk == NULL) {
       return false;
    }
 
-   unsigned int offset = (unsigned int)(indx / MSKLEN) * MSKLEN;
-   int bit = indx % MSKLEN;
-   int bi = block_index(c, offset);
-   if (bi < 0) {
-      return false;           /* no block for this offset */
-   }
-
-   block *blk = &c->b[bi];
    mask_t bitmask = (mask_t)1 << bit;
    if (!(blk->msk & bitmask)) {
-      return false;           /* bit not set */
+      return false;
    }
 
    int cnt = count1(blk->msk);
    int pos = value_index(blk->msk, bit);
 
-   /* If this is the only value in the block, remove the whole block. */
-   if (cnt == 1) {
-      /* free vals array (single element) */
+   if (pos < cnt - 1) {
+      memmove(&blk->vals[pos], &blk->vals[pos + 1],
+              sizeof(int) * (size_t)(cnt - pos - 1));
+   }
+
+   if (cnt - 1 == 0) {
       free(blk->vals);
       blk->vals = NULL;
-
-      /* shift remaining blocks left */
-      if (bi < c->n - 1) {
-         memmove(&c->b[bi], &c->b[bi + 1], sizeof(block) * (size_t)(c->n - bi - 1));
+   } else {
+      int *nv = 
+        realloc(blk->vals, sizeof(int) * (size_t)(cnt - 1));
+      if (nv != NULL) {
+         blk->vals = nv;
       }
-
-      /* shrink blocks array or free if now empty */
-      if (c->n - 1 == 0) {
-         free(c->b);
-         c->b = NULL;
-         c->n = 0;
-      } else {
-         block *nb = realloc(c->b, sizeof(block) * (size_t)(c->n - 1));
-         if (nb != NULL) {
-            c->b = nb;
-         }
-         c->n--;
-      }
-      return true;
    }
 
-   /* Otherwise remove the single value from vals[] and update mask. */
-   if (pos < cnt - 1) {
-      memmove(&blk->vals[pos], &blk->vals[pos + 1], sizeof(int) * (size_t)(cnt - pos - 1));
-   }
-   /* try to shrink vals[], if realloc fails keep old pointer (still valid) */
-   int *nv = realloc(blk->vals, sizeof(int) * (size_t)(cnt - 1));
-   if (nv != NULL || cnt - 1 == 0) {
-      /* if cnt-1 == 0, realloc may return NULL; but that case handled above (cnt==1) */
-      blk->vals = nv;
-   }
-   /* clear the bit in mask */
    blk->msk &= ~bitmask;
    return true;
+}
+
+bool remove_block(csa* c, int bi) {
+   if (c == NULL || bi < 0 || bi >= c->n) {
+      return false;
+   }
+
+   free(c->b[bi].vals);
+   c->b[bi].vals = NULL;
+
+   if (bi < c->n - 1) {
+      memmove(&c->b[bi], &c->b[bi + 1],
+              sizeof(block) * (size_t)(c->n - bi - 1));
+   }
+
+   if (c->n - 1 == 0) {
+      free(c->b);
+      c->b = NULL; c->n = 0;
+   } else {
+      block *nb = 
+         realloc(c->b, sizeof(block) * (size_t)(c->n - 1));
+      if (nb != NULL) {
+         c->b = nb;
+      }
+      c->n--;
+   }
+   return true;
+}
+
+
+bool csa_delete(csa* c, int indx){
+   if (c == NULL || indx < 0) {
+      return false;
+   }
+
+   unsigned int offset = (unsigned int)(indx/MSKLEN)*MSKLEN;
+   int bit = indx % MSKLEN;
+
+   int bi = block_index(c, offset);
+   if (bi < 0) {
+      return false;           
+   }
+
+   block *blk = &c->b[bi];
+   mask_t bitmask = (mask_t)1 << bit;
+
+   if (!(blk->msk & bitmask)) {
+      return false;          
+   }
+
+   int cnt = count1(blk->msk);
+   if (cnt == 1) {
+     return remove_block(c, bi);
+   }
+
+   return remove_value(blk , bit);
 }
 #endif
 
