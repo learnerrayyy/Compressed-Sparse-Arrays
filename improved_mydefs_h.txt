@@ -1,0 +1,91 @@
+#pragma once
+#include "csa.h"
+#define TBUFSIZE 100000
+
+// ============================================================================
+// CORE HELPER FUNCTIONS - Used by multiple CSA operations
+// ============================================================================
+
+/*
+ * count1 - Count number of set bits in mask
+ * Used by: csa_set, csa_delete, csa_tostring, block_remove_value, etc.
+ */
+int count1(mask_t msk);
+
+/*
+ * block_index - Find block with given offset
+ * Used by: csa_get, csa_set, csa_delete
+ * Returns: block index (0 to n-1) if found, -1 if not found
+ */
+int block_index(csa* c, unsigned int offset);
+
+/*
+ * value_index - Calculate position in vals array for given bit
+ * Used by: csa_get, csa_set, block_cover_value, block_insert_value, 
+ *          csa_foreach, block_remove_value
+ * Returns: index into vals array (0 to popcount-1)
+ */
+int value_index(mask_t msk, int bit);
+
+/*
+ * insert_block - Create and insert new block at offset
+ * Used by: csa_set
+ * Returns: pointer to new block, NULL on failure
+ */
+block* insert_block(csa* c, unsigned int offset);
+
+// ============================================================================
+// HELPERS FOR csa_set - Value insertion and update
+// ============================================================================
+
+/*
+ * block_cover_value - Overwrite existing value in block
+ * Used by: csa_set
+ * Returns: true if bit was already set and value updated
+ */
+bool block_cover_value(block* blk, int bit, int val);
+
+/*
+ * block_insert_value - Insert new value into block
+ * Used by: csa_set
+ * Returns: true if value inserted successfully
+ */
+bool block_insert_value(block* blk, int bit, int val);
+
+// ============================================================================
+// HELPERS FOR csa_delete (EXT) - Value and block removal
+// ============================================================================
+
+#ifdef EXT
+/*
+ * block_remove_value - Remove value at bit position from block
+ * Used by: csa_delete
+ * Returns: true if value removed, false if bit wasn't set
+ */
+bool block_remove_value(block* blk, int bit);
+
+/*
+ * remove_block - Remove entire block from CSA
+ * Used by: csa_delete (when removing last value in block)
+ * Returns: true if block removed successfully
+ */
+bool remove_block(csa* c, int bi);
+#endif
+
+// ============================================================================
+// HELPERS FOR csa_tostring - String formatting
+// ============================================================================
+
+/*
+ * block_tostring - Format single block as string
+ * Used by: csa_tostring
+ * Format: {count|values}
+ */
+void block_tostring(block* blk, char** p, size_t* rem);
+
+/*
+ * bit_tostring - Format all values in block as [idx]=val pairs
+ * Used by: block_tostring
+ * Format: [idx1]=val1:[idx2]=val2:...
+ */
+void bit_tostring(block* blk, char** p, size_t* rem, int* seen);

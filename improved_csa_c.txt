@@ -1,0 +1,709 @@
+/*
+ * Compressed Sparse Array (CSA) Implementation
+ * 
+ * CSA uses a block-based structure to efficiently store sparse integer arrays.
+ * Each block covers 64 consecutive indices using a bitmask to track which
+ * indices are set, and a compact values array storing only the set values.
+ */
+
+#include "csa.h"
+#include "mydefs.h"
+
+/*
+ * count1 - Count number of set bits in mask
+ * Purpose: Determine how many values are stored in a block
+ * @msk: 64-bit mask where each bit indicates if an index has a value
+ * Returns: Number of bits set to 1
+ */
+int count1(mask_t msk){
+   return __builtin_popcountll(msk);
+}
+
+/*
+ * block_index - Find block containing given offset
+ * Purpose: Locate which block (if any) covers a specific offset
+ * Steps:
+ *   1. Validate input (c != NULL)
+ *   2. Linear search through blocks comparing offsets
+ *   3. Return index if found, -1 if not found or offset too large
+ * @c: CSA structure
+ * @offset: Block offset to search for (must be multiple of 64)
+ * Returns: Block index (0 to c->n-1) if found, -1 otherwise
+ * 
+ * FIXED: Previous logic would return -1 prematurely when encountering
+ * a block with offset > target. Now correctly searches all blocks.
+ */
+int block_index(csa* c, unsigned int offset){
+   if(c == NULL){
+      return -1;
+   }
+   // Search through all blocks - they are sorted by offset
+   for(int i = 0; i < c->n; i++){
+      if(c->b[i].offset == offset){
+         return i;  // Found exact match
+      }
+   }
+   return -1;  // Not found after checking all blocks
+}
+
+/*
+ * value_index - Calculate position in values array
+ * Purpose: Determine where a value should be stored within a block's vals array
+ * Steps:
+ *   1. Create mask for all bits before target bit
+ *   2. Count set bits in that lower mask
+ *   3. Return count (this is the array index)
+ * @msk: Block's bitmask
+ * @bit: Bit position (0-63) within the block
+ * Returns: Index into vals array (0 to popcount-1)
+ */
+int value_index(mask_t msk, int bit){
+   mask_t lower = 0;
+   if(bit > 0){
+      lower = msk & (((mask_t)1 << bit) - 1);
+   }
+   return count1(lower);
+}
+
+/*
+ * insert_block - Create new block at specified offset
+ * Purpose: Allocate and insert a new block, maintaining sorted order
+ * Steps:
+ *   1. Validate input (c != NULL)
+ *   2. Find insertion position (linear search for correct spot)
+ *   3. Reallocate block array with space for one more
+ *   4. Shift existing blocks to make room (using memmove)
+ *   5. Initialize new block (offset, msk=0, vals=NULL)
+ * @c: CSA structure
+ * @offset: Offset for new block (must be multiple of 64)
+ * Returns: Pointer to newly created block, NULL on failure
+ */
+block* insert_block(csa* c, unsigned int offset){
+   if(c == NULL){
+      return NULL;
+   }
+   
+   // Find position to insert (blocks are sorted by offset)
+   int pos = 0;
+   while(pos < c->n && c->b[pos].offset < offset){
+      pos++;
+   }
+
+   // Reallocate to accommodate one more block
+   block* nb = realloc(c->b, sizeof(block) * (c->n + 1));
+   if(nb == NULL){
+      return NULL;
+   }
+   
+   c->b = nb;
+   // Shift blocks right to make space
+   memmove(&c->b[pos + 1], &c->b[pos], 
+            sizeof(block) * (c->n - pos));
+   
+   // Initialize new block
+   c->b[pos].offset = offset;
+   c->b[pos].msk = 0;
+   c->b[pos].vals = NULL;
+   c->n++;
+   
+   return &c->b[pos];
+}
+
+/*
+ * block_cover_value - Update existing value in block
+ * Purpose: Overwrite a value that's already set at given bit position
+ * Steps:
+ *   1. Validate block exists and bit is already set
+ *   2. Calculate value position using value_index()
+ *   3. Overwrite value at that position
+ * @blk: Block to update
+ * @bit: Bit position (0-63)
+ * @val: New value to store
+ * Returns: true if successful, false if bit not set or block NULL
+ */
+bool block_cover_value(block* blk, int bit, int val){
+   if(blk == NULL) return false;
+   if(!(blk->msk & ((mask_t)1 << bit))) return false;
+   
+   int pos = value_index(blk->msk, bit);
+   blk->vals[pos] = val;
+   return true;
+}
+
+/*
+ * block_insert_value - Insert new value into block
+ * Purpose: Add a new value for a previously unset bit position
+ * Steps:
+ *   1. Validate block exists
+ *   2. Calculate insertion position using value_index()
+ *   3. Count current values using count1()
+ *   4. Reallocate vals array with space for one more
+ *   5. Shift existing values to make room (using memmove)
+ *   6. Insert new value and update mask
+ * @blk: Block to insert into
+ * @bit: Bit position (0-63)
+ * @val: Value to store
+ * Returns: true if successful, false on failure
+ */
+bool block_insert_value(block* blk, int bit, int val){
+   if(blk == NULL){
+      return false;
+   }
+   
+   int pos = value_index(blk->msk, bit);
+   int cnt = count1(blk->msk);
+   
+   // Reallocate to accommodate one more value
+   int* nv = realloc(blk->vals, sizeof(int) * (cnt + 1));
+   if(nv == NULL){
+      return false;
+   }
+   
+   blk->vals = nv;
+   // Shift values right to make space
+   memmove(&blk->vals[pos + 1], &blk->vals[pos], 
+           sizeof(int) * (cnt - pos));
+   
+   // Insert new value and update mask
+   blk->vals[pos] = val;
+   blk->msk |= ((mask_t)1 << bit);
+   
+   return true;
+}
+
+/*
+ * csa_init - Initialize new CSA
+ * Purpose: Allocate and initialize an empty CSA structure
+ * Steps:
+ *   1. Allocate CSA structure
+ *   2. Initialize fields (b=NULL, n=0)
+ * Returns: Pointer to new CSA, NULL on allocation failure
+ */
+csa* csa_init(void){
+   csa* c = malloc(sizeof(csa));
+   if(c == NULL){
+      return NULL;
+   }
+   c->b = NULL;
+   c->n = 0;
+   return c;
+}
+
+/*
+ * csa_get - Retrieve value at given index
+ * Purpose: Read a value from the sparse array if it exists
+ * Steps:
+ *   1. Validate inputs (c, val not NULL, idx >= 0)
+ *   2. Calculate offset and bit position
+ *   3. Find block using block_index()
+ *   4. Check if bit is set in block's mask
+ *   5. Calculate value position using value_index()
+ *   6. Copy value to output parameter
+ * @c: CSA structure
+ * @idx: Array index to read
+ * @val: Output parameter for retrieved value
+ * Returns: true if value exists and was retrieved, false otherwise
+ */
+bool csa_get(csa* c, int idx, int* val){
+   if(c == NULL || val == NULL || idx < 0){
+      return false;
+   }
+   
+   unsigned int offset = (unsigned int)(idx / MSKLEN) * MSKLEN;
+   int bit = idx % MSKLEN;
+   
+   int bi = block_index(c, offset);
+   if(bi < 0){
+      return false;
+   }
+   
+   block* blk = &c->b[bi];
+   if(!(blk->msk & ((mask_t)1 << bit))){
+      return false;
+   }
+   
+   int pos = value_index(blk->msk, bit);
+   *val = blk->vals[pos];
+   return true;
+}
+
+/*
+ * csa_set - Store value at given index
+ * Purpose: Insert new value or overwrite existing value in sparse array
+ * Steps:
+ *   1. Validate inputs (c not NULL, idx >= 0)
+ *   2. Calculate offset and bit position
+ *   3. Find block using block_index()
+ *   4. If block doesn't exist, create using insert_block()
+ *   5. If bit already set, update using block_cover_value()
+ *   6. Otherwise insert new value using block_insert_value()
+ * @c: CSA structure
+ * @idx: Array index to write
+ * @val: Value to store
+ * Returns: true if successful, false on failure
+ */
+bool csa_set(csa* c, int idx, int val){
+   if(c == NULL || idx < 0){
+      return false;
+   }
+   
+   unsigned int offset = (unsigned int)(idx / MSKLEN) * MSKLEN;
+   int bit = idx % MSKLEN;
+   
+   int bi = block_index(c, offset);
+   block* blk = NULL;
+   
+   if(bi < 0){
+      // Block doesn't exist, create it
+      blk = insert_block(c, offset);
+      if(blk == NULL){
+         return false;
+      }
+   } else {
+      blk = &c->b[bi];
+   }
+
+   // Update existing or insert new value
+   if(blk->msk & ((mask_t)1 << bit)){
+      return block_cover_value(blk, bit, val);
+   }
+   return block_insert_value(blk, bit, val);
+}
+
+/*
+ * bit_tostring - Convert block's values to string representation
+ * Purpose: Format all set values in a block as "[idx]=val" pairs
+ * Steps:
+ *   1. Validate inputs
+ *   2. Iterate through all 64 bits
+ *   3. For each set bit:
+ *      a. Add separator ':' if not first value
+ *      b. Format and append "[index]=value"
+ *      c. Update pointer and remaining space
+ * @blk: Block to stringify
+ * @p: Pointer to current position in string buffer
+ * @rem: Remaining buffer space
+ * @seen: Counter for formatting (adds ':' between entries)
+ */
+void bit_tostring(block* blk, char** p, size_t* rem, int* seen){
+   if (blk == NULL || p == NULL || *p == NULL || 
+       rem == NULL || *rem == 0 || seen == NULL) {
+      return;
+   }
+    
+   for (int bit = 0; bit < MSKLEN && *rem > 0; bit++) {
+      mask_t m = (mask_t)1 << bit;
+      if (blk->msk & m) {
+         int written;
+         if (*seen) {
+            written = snprintf(*p, *rem, ":");
+            if (written < 0) return;
+            *p += written; 
+            *rem -= (size_t)written;
+         }
+         
+         written = snprintf(*p, *rem, "[%u]=%d", 
+                    (unsigned)(blk->offset + bit),
+                    blk->vals[value_index(blk->msk, bit)]);
+         if (written < 0) return;
+         
+         *p += written; 
+         *rem -= (size_t)written;
+         (*seen)++;
+      }
+   }
+}
+
+/*
+ * block_tostring - Convert single block to string representation
+ * Purpose: Format block as "{count|values}" 
+ * Steps:
+ *   1. Validate inputs
+ *   2. Write opening brace and value count
+ *   3. Call bit_tostring() to format all values
+ *   4. Write closing brace
+ * @blk: Block to stringify
+ * @p: Pointer to current position in string buffer
+ * @rem: Remaining buffer space
+ */
+void block_tostring(block* blk, char** p, size_t* rem)
+{
+   if (blk == NULL || p == NULL || *p == NULL || 
+       rem == NULL || *rem == 0) return;
+       
+   int written = snprintf(*p, *rem, "{%d|", count1(blk->msk));
+   if (written < 0) return;
+   *p += written; 
+   *rem -= (size_t)written;
+
+   int seen = 0;
+   bit_tostring(blk, p, rem, &seen);
+
+   written = snprintf(*p, *rem, "}");
+   if (written < 0) return;
+   *p += written; 
+   *rem -= (size_t)written;
+}
+
+/*
+ * csa_tostring - Convert entire CSA to string representation
+ * Purpose: Create human-readable representation of CSA structure
+ * Steps:
+ *   1. Validate input string buffer
+ *   2. Handle NULL CSA (empty string)
+ *   3. Handle empty CSA ("0 blocks")
+ *   4. Write block count header
+ *   5. Call block_tostring() for each block
+ *   6. Null-terminate string
+ * @c: CSA structure
+ * @s: Output string buffer (must have space for TBUFSIZE chars)
+ */
+void csa_tostring(csa* c, char* s){
+   if (s == NULL) return;
+   
+   char *p = s; 
+   size_t rem = TBUFSIZE; 
+   int written;
+
+   if (c == NULL) {
+      *p = '\0';
+      return;
+   }
+
+   if (c->n == 0) {
+      snprintf(p, rem, "0 blocks");
+      return;
+   }
+
+   written = snprintf(p, rem, "%d block%s ", 
+                      c->n, c->n == 1 ? "" : "s");
+   if (written < 0) return;
+   p += written; 
+   rem -= (size_t)written;
+
+   for (int i = 0; i < c->n; i++) {
+      block *blk = &c->b[i];
+      block_tostring(blk, &p, &rem);
+   }
+
+   *p = '\0';
+}
+
+/*
+ * csa_free - Deallocate entire CSA structure
+ * Purpose: Free all memory and set pointer to NULL
+ * Steps:
+ *   1. Validate input pointer
+ *   2. Free each block's vals array
+ *   3. Free block array
+ *   4. Free CSA structure
+ *   5. Set caller's pointer to NULL
+ * @l: Pointer to CSA pointer (allows setting caller's pointer to NULL)
+ */
+void csa_free(csa** l)
+{
+   if(l == NULL || *l == NULL){
+      return;
+   }
+   csa* c = *l;
+   
+   // Free all value arrays
+   for(int i = 0; i < c->n; i++){
+      free(c->b[i].vals);
+   }
+   
+   free(c->b);
+   free(c);
+   *l = NULL;
+}
+
+/*
+ * test - Unit tests for CSA implementation
+ * Purpose: Verify correctness of all helper functions and edge cases
+ */
+void test(void)
+{
+   csa* c = NULL;
+
+   // Test count1
+   assert(count1(0ULL) == 0);
+   assert(count1(1ULL) == 1);
+   assert(count1(3ULL) == 2);
+
+   // Test value_index
+   mask_t m = 0;
+   m |= (1ULL << 2);
+   m |= (1ULL << 5);
+   m |= (1ULL << 6);
+   assert(value_index(m, 2) == 0);
+   assert(value_index(m, 5) == 1);
+   assert(value_index(m, 6) == 2);
+
+   // Test insert_block / block_index
+   c = csa_init();
+   assert(c != NULL);
+
+   block* b0 = insert_block(c, 0);
+   assert(b0 != NULL);
+   assert(c->n == 1);
+   assert(b0->offset == 0);
+
+   block* b1 = insert_block(c, 64);
+   block* b2 = insert_block(c, 128);
+   assert(b1 != NULL && b2 != NULL);
+   assert(c->n == 3);
+
+   assert(block_index(c, 0) == 0);
+   assert(block_index(c, 64) == 1);
+   assert(block_index(c, 128) == 2);
+   assert(block_index(c, 192) == -1);
+
+   int tmp = 0;
+   if (csa_set(c, 2, 25)) {
+      assert(csa_get(c, 2, &tmp));
+      assert(tmp == 25);
+   }
+
+   // Test invalid arguments
+   assert(!csa_set(NULL, 1, 1));
+   assert(!csa_set(c, -1, 5));
+   assert(!csa_get(c, 0, NULL));
+
+   // Test out-of-order insertion
+   block* bmid = insert_block(c, 32);
+   assert(bmid != NULL);
+   assert(block_index(c, 0) == 0);
+   assert(block_index(c, 32) == 1);
+   assert(block_index(c, 64) == 2);
+   assert(block_index(c, 128) == 3);
+
+   // Test edge bits
+   block* blk0 = &c->b[block_index(c, 0)];
+   assert(blk0 != NULL);
+   assert(block_insert_value(blk0, 0, 100));
+   assert(block_insert_value(blk0, MSKLEN - 1, 200));
+   assert(block_insert_value(blk0, MSKLEN / 2, 150));
+
+   assert(csa_get(c, 0, &tmp) && tmp == 100);
+   assert(csa_get(c, (int)(blk0->offset + (MSKLEN - 1)), &tmp) && tmp == 200);
+   assert(csa_get(c, (int)(blk0->offset + (MSKLEN / 2)), &tmp) && tmp == 150);
+
+   // Test block_cover_value
+   assert(!block_cover_value(blk0, 1, 5));
+   assert(block_cover_value(blk0, 0, 111));
+   assert(csa_get(c, 0, &tmp) && tmp == 111);
+
+   assert(csa_set(c, 0, 222));
+   assert(csa_get(c, 0, &tmp) && tmp == 222);
+
+   // Test tostring
+   char tbuf[TBUFSIZE];
+   csa_tostring(c, tbuf);
+   assert(strstr(tbuf, "block") != NULL);
+   assert(strstr(tbuf, "[0]=222") != NULL);
+
+   char midpat[64], highpat[64];
+   snprintf(midpat, sizeof(midpat), "[%u]=%d", 
+            (unsigned)(blk0->offset + (MSKLEN / 2)), 150);
+   snprintf(highpat, sizeof(highpat), "[%u]=%d", 
+            (unsigned)(blk0->offset + (MSKLEN - 1)), 200);
+   
+   char *p0 = strstr(tbuf, "[0]=222");
+   char *pm = strstr(tbuf, midpat);
+   char *ph = strstr(tbuf, highpat);
+   assert(p0 && pm && ph && p0 < pm && pm < ph);
+
+   // Test csa_free
+   csa_free(&c);
+   assert(c == NULL);
+   csa_free(&c);
+
+   // Test empty CSA
+   c = csa_init();
+   assert(c != NULL);
+   csa_tostring(c, tbuf);
+   assert(strcmp(tbuf, "0 blocks") == 0);
+
+   csa_free(&c);
+   assert(c == NULL);
+}
+
+#ifdef EXT
+/*
+ * csa_foreach - Apply function to all stored values
+ * Purpose: Iterator that calls func() for each value in the CSA
+ * Steps:
+ *   1. Validate inputs (func and c not NULL)
+ *   2. Handle empty CSA (early return)
+ *   3. For each block:
+ *      a. For each set bit:
+ *         i. Calculate value position using value_index()
+ *         ii. Call func() with pointer to value and accumulator
+ * @func: Function to apply (receives value pointer and accumulator)
+ * @c: CSA structure
+ * @ac: Accumulator passed to each function call
+ */
+void csa_foreach(void (*func)(int* p, int* ac), csa* c, int* ac) {
+   if (func == NULL || c == NULL) {
+      return;
+   }
+   if (c->n == 0) {
+      return;
+   }
+
+   for (int bi = 0; bi < c->n; bi++) {
+      block *blk = &c->b[bi];
+      for (int bit = 0; bit < MSKLEN; bit++) {
+         mask_t m = (mask_t)1 << bit;
+         if (blk->msk & m) {
+            int pos = value_index(blk->msk, bit);
+            func(&blk->vals[pos], ac);
+         }
+      }
+   }
+}
+
+/*
+ * block_remove_value - Helper to remove value from block
+ * Purpose: Remove a value at given bit position, shrinking vals array
+ * Steps:
+ *   1. Validate block exists and bit is set
+ *   2. Calculate value position using value_index()
+ *   3. Count current values using count1()
+ *   4. Shift remaining values left (using memmove)
+ *   5. Reallocate vals array to smaller size
+ *   6. Clear bit in mask
+ * @blk: Block to remove from
+ * @bit: Bit position (0-63)
+ * Returns: true if successful, false if bit wasn't set
+ */
+bool block_remove_value(block* blk, int bit) {
+   if (blk == NULL) {
+      return false;
+   }
+   
+   mask_t bitmask = (mask_t)1 << bit;
+   if (!(blk->msk & bitmask)) {
+      return false;  // Bit not set
+   }
+   
+   int cnt = count1(blk->msk);
+   int pos = value_index(blk->msk, bit);
+   
+   // Shift values left to fill gap
+   if (pos < cnt - 1) {
+      memmove(&blk->vals[pos], &blk->vals[pos + 1], 
+              sizeof(int) * (size_t)(cnt - pos - 1));
+   }
+   
+   // Shrink vals array
+   if (cnt - 1 == 0) {
+      free(blk->vals);
+      blk->vals = NULL;
+   } else {
+      int *nv = realloc(blk->vals, sizeof(int) * (size_t)(cnt - 1));
+      if (nv != NULL) {
+         blk->vals = nv;
+      }
+      // If realloc fails, we still have valid array (just not shrunk)
+   }
+   
+   // Clear bit in mask
+   blk->msk &= ~bitmask;
+   return true;
+}
+
+/*
+ * remove_block - Helper to remove entire block from CSA
+ * Purpose: Delete a block and compact the block array
+ * Steps:
+ *   1. Validate inputs
+ *   2. Free block's vals array
+ *   3. Shift remaining blocks left (using memmove)
+ *   4. Handle case of removing last block (free entire array)
+ *   5. Otherwise reallocate block array to smaller size
+ * @c: CSA structure
+ * @bi: Block index to remove
+ * Returns: true if successful, false on invalid input
+ */
+bool remove_block(csa* c, int bi) {
+   if (c == NULL || bi < 0 || bi >= c->n) {
+      return false;
+   }
+   
+   // Free the block's value array
+   free(c->b[bi].vals);
+   c->b[bi].vals = NULL;
+   
+   // Shift remaining blocks left
+   if (bi < c->n - 1) {
+      memmove(&c->b[bi], &c->b[bi + 1], 
+              sizeof(block) * (size_t)(c->n - bi - 1));
+   }
+   
+   // Handle removing last block
+   if (c->n - 1 == 0) {
+      free(c->b);
+      c->b = NULL;
+      c->n = 0;
+   } else {
+      // Try to shrink array
+      block *nb = realloc(c->b, sizeof(block) * (size_t)(c->n - 1));
+      if (nb != NULL) {
+         c->b = nb;
+      }
+      // If realloc fails, we still have valid array (just not shrunk)
+      c->n--;
+   }
+   
+   return true;
+}
+
+/*
+ * csa_delete - Remove value at given index
+ * Purpose: Delete a stored value from the sparse array
+ * Steps:
+ *   1. Validate inputs (c not NULL, indx >= 0)
+ *   2. Calculate offset and bit position
+ *   3. Find block using block_index()
+ *   4. Check if bit is set (return false if not)
+ *   5. If this is the last value in block:
+ *      a. Call remove_block() to delete entire block
+ *   6. Otherwise:
+ *      a. Call block_remove_value() to remove just this value
+ * @c: CSA structure
+ * @indx: Array index to delete
+ * Returns: true if value was removed, false if it didn't exist
+ */
+bool csa_delete(csa* c, int indx)
+{
+   if (c == NULL || indx < 0) {
+      return false;
+   }
+
+   unsigned int offset = (unsigned int)(indx / MSKLEN) * MSKLEN;
+   int bit = indx % MSKLEN;
+   
+   int bi = block_index(c, offset);
+   if (bi < 0) {
+      return false;  // Block doesn't exist
+   }
+
+   block *blk = &c->b[bi];
+   mask_t bitmask = (mask_t)1 << bit;
+   
+   if (!(blk->msk & bitmask)) {
+      return false;  // Value not set
+   }
+
+   // Check if this is the last value in the block
+   int cnt = count1(blk->msk);
+   if (cnt == 1) {
+      // Remove entire block using helper
+      return remove_block(c, bi);
+   }
+
+   // Remove just this value using helper
+   return block_remove_value(blk, bit);
+}
+#endif
