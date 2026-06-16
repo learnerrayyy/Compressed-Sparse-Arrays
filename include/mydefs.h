@@ -1,6 +1,8 @@
 #pragma once
 #include "csa.h"
 
+#define TBUFSIZE 100000
+
 int popcount_mask(mask_t msk);
 //count how many bits are set to 1 in the mask
 //m : a 64-bits mask_t where each bit repersent an idx
